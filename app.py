@@ -8,13 +8,19 @@ WEBHOOK_PATH = '/tg_bot'
 
 def log(s, ts='Запись'):
     dt = time.strftime('%d.%m.%Y %H:%M:%S')
-    with open('log.txt', 'a', encoding='utf-8') as f:
-        f.write(f'{dt};{ts};{s}\n')
+    try:
+        with open('log.txt', 'a', encoding='utf-8') as f:
+            f.write(f'{dt};{ts};{s}\n')
+    except Exception:
+        pass
+   
+    print(f'{dt};{ts};{s}', flush=True)
 
 def send_message(chat_id, text):
     url = f'https://api.telegram.org/bot{TOKEN}/sendMessage'
     try:
         r = requests.post(url, data={'chat_id': chat_id, 'text': text}, timeout=10)
+        log(f'sendMessage status={r.status_code} response={r.text}', 'DEBUG')
         if not r.ok:
             log(f'sendMessage failed: {r.text}', 'Ошибка')
     except Exception as e:
@@ -25,19 +31,22 @@ def application(environ, start_response):
         path = environ.get('PATH_INFO', '').lower()
         method = environ.get('REQUEST_METHOD', 'GET')
 
-        # отвечаем 200, чтобы сервис не усыплялся
+        # healthcheck чтобы Render не усыплял сервис
         if path == '/healthcheck':
             start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8')])
             return [b'OK']
 
-        # Основной webhook
+        # основной webhook
         if path == WEBHOOK_PATH and method == 'POST':
-            # читаем тело
-            length = int(environ.get('CONTENT_LENGTH', 0) or 0)
-            raw = environ['wsgi.input'].read(length) if length else b''
-            text = raw.decode('UTF-8')
+            # читаем тело целиком — без CONTENT_LENGTH
+            try:
+                raw = environ['wsgi.input'].read()
+            except Exception as e:
+                log(f'read wsgi.input error: {e}', 'Ошибка')
+                raw = b''
 
-            text = text.replace('\n', ' ')
+            text = raw.decode('UTF-8', errors='replace')
+            log(f'RAW: {text}', 'DEBUG')
 
             try:
                 data = json.loads(text)
@@ -58,16 +67,17 @@ def application(environ, start_response):
                     reply = f'Ты написал: {user_text}'
 
                 send_message(chat_id, reply)
+            else:
+                log(f'Нет message в update: {data}', 'DEBUG')
 
             start_response('200 OK', [('Content-Type', 'text/plain')])
             return [b'ok']
-          
-        log(f'Вызов неизвестного URL: {path}')
+
+        log(f'Вызов неизвестного URL: {path}', 'DEBUG')
         start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8')])
         return [b'Bot is running.']
 
     except Exception as e:
-        log(str(e), 'Ошибка')
-        # ВСЕГДА 200, чтобы Telegram не заблокировал webhook
+        log(f'GLOBAL ERROR: {e}', 'Ошибка')
         start_response('200 OK', [('Content-Type', 'text/plain')])
         return [b'ok']
