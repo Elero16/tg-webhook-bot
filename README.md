@@ -67,3 +67,5 @@ README.md # этот файл
 - `threading.Timer` - таймеры
 - `gunicorn`  WSGI-сервер
 
+## Апдейт на 16.09.26
+Добавлен простой ИИ агент от OpenAI
