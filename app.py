@@ -13,15 +13,19 @@ WEBHOOK_PATH = '/tg_bot'
 API = f'https://api.telegram.org/bot{TOKEN}'
 DB_PATH = 'pomodoro.db'
 
-# ключ openai, если нет, client будет none и ии просто не работает
-OPENAI_KEY = os.environ.get('OPENAI_API_KEY', '')
-client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+# ключ github models
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
+# подключаемся к github models через совместимый с openai интерфейс
+client = OpenAI(
+    api_key=GITHUB_TOKEN,
+    base_url="https://models.github.ai/inference"
+) if GITHUB_TOKEN else None
 
-# сюда складываем активные таймеры по chat_id
-ACTIVE_TIMERS = {}
-
-# память ии: {chat_id: [сообщения]}
+# память ии {chat_id: [сообщения]}
 AI_MEMORY = {}
+
+# активные таймеры{chat_id: {'timer': Timer, 'mode': str, 'remaining': int, 'end_time': float}}
+ACTIVE_TIMERS = {}
 
 STATUS_EMOJI = {
     'work': '🍅',
@@ -76,12 +80,12 @@ def progress_bar(elapsed, total, width=10):
 
 
 def ask_ai(chat_id, user_question):
-    # отладка: видим, что функция вообще вызывается
+    # отладка. видим, что функция вообще вызывается
     log(f'ask_ai called: chat={chat_id}, q={user_question[:50]}', 'DEBUG')
 
-    # если ключа нет - молча выходим
+    # если ключа нет, молча выходим
     if client is None:
-        log('ask_ai: client is None — OPENAI_API_KEY не задан', 'Ошибка')
+        log('ask_ai: client is None — GITHUB_TOKEN не задан', 'Ошибка')
         return None
 
     if chat_id not in AI_MEMORY:
@@ -101,7 +105,7 @@ def ask_ai(chat_id, user_question):
 
     try:
         response = client.chat.completions.create(
-            model='gpt-4o-mini',
+            model='gpt-4o',
             messages=messages,
             max_tokens=300,
             temperature=0.7,
