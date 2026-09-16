@@ -5,12 +5,23 @@ import sqlite3
 import random
 import threading
 import requests
+from openai import OpenAI
 
+# токен бота берём из переменных окружения
 TOKEN = os.environ.get('BOT_TOKEN', '')
 WEBHOOK_PATH = '/tg_bot'
 API = f'https://api.telegram.org/bot{TOKEN}'
 DB_PATH = 'pomodoro.db'
 
+# ключ openai, если нет, client будет none и ии просто не работает
+OPENAI_KEY = os.environ.get('OPENAI_API_KEY', '')
+client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+
+# сюда складываем активные таймеры по chat_id
+ACTIVE_TIMERS = {}
+
+# память ии: {chat_id: [сообщения]}
+AI_MEMORY = {}
 
 STATUS_EMOJI = {
     'work': '🍅',
@@ -43,11 +54,9 @@ BREAK_TIPS = [
     'Разомни шею и плечи.',
 ]
 
-# Активные таймеры: {chat_id: {'timer': Timer, 'mode': str, 'remaining': int, 'end_time': float}}
-ACTIVE_TIMERS = {}
-
 
 def log(s, ts='INFO'):
+    # просто пишем в файл и в stdout (stdout видно в render logs)
     dt = time.strftime('%d.%m.%Y %H:%M:%S')
     try:
         with open('log.txt', 'a', encoding='utf-8') as f:
@@ -58,6 +67,7 @@ def log(s, ts='INFO'):
 
 
 def progress_bar(elapsed, total, width=10):
+    # рисуем прогресс из блоков, на будущее
     if total <= 0:
         return '░' * width
     filled = int(width * elapsed / total)
@@ -65,7 +75,52 @@ def progress_bar(elapsed, total, width=10):
     return '█' * filled + '░' * (width - filled)
 
 
+def ask_ai(chat_id, user_question):
+    # если ключа нет, молча выходим, бот скажет заглушку
+    if client is None:
+        return None
+
+    # у каждого чата своя короткая память
+    if chat_id not in AI_MEMORY:
+        AI_MEMORY[chat_id] = []
+
+    # системный промпт, роль бота
+    messages = [
+        {'role': 'system', 'content': (
+            'Ты — дружелюбный помощник Pomodoro-бота. '
+            'Помогаешь с продуктивностью, концентрацией, '
+            'тайм-менеджментом и методом Pomodoro. '
+            'Отвечай кратко (2-4 предложения), дружелюбно, на русском. '
+            'Если вопрос не по теме — вежливо верни разговор к продуктивности.'
+        )}
+    ]
+
+    # добавляем последние 6 сообщений из памяти
+    messages.extend(AI_MEMORY[chat_id][-6:])
+    messages.append({'role': 'user', 'content': user_question})
+
+    try:
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=messages,
+            max_tokens=300,
+            temperature=0.7,
+        )
+        answer = response.choices[0].message.content.strip()
+
+        # обновляем память и не даём ей расти бесконечно
+        AI_MEMORY[chat_id].append({'role': 'user', 'content': user_question})
+        AI_MEMORY[chat_id].append({'role': 'assistant', 'content': answer})
+        AI_MEMORY[chat_id] = AI_MEMORY[chat_id][-12:]
+
+        return answer
+    except Exception as e:
+        log(f'ask_ai error: {e}', 'Ошибка')
+        return None
+
+
 def db_init():
+    # создаём таблицы если их ещё нет
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -97,6 +152,7 @@ def db_init():
 
 
 def db_get_user(chat_id, first_name=None):
+    # достаём юзера, если нет создаём
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT chat_id, first_name, tomatoes_today, tomatoes_total,
@@ -118,6 +174,7 @@ def db_get_user(chat_id, first_name=None):
                 'streak': 0, 'last_pomodoro_date': None, 'xp': 0,
                 'achievements': '', 'awaiting_task': 0}
 
+    # если наступил новый день, сбрасываем счётчик за сегодня
     if row[4] != today:
         c.execute('UPDATE users SET tomatoes_today=0, last_date=? WHERE chat_id=?',
                   (today, chat_id))
@@ -133,6 +190,7 @@ def db_get_user(chat_id, first_name=None):
 
 
 def db_add_tomato(chat_id):
+    # +1 помидорка, +10 xp
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''UPDATE users
@@ -145,6 +203,7 @@ def db_add_tomato(chat_id):
 
 
 def update_streak(chat_id):
+    # считаем серию дней подряд
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT streak, last_pomodoro_date FROM users WHERE chat_id=?', (chat_id,))
@@ -171,6 +230,7 @@ def update_streak(chat_id):
 
 
 def check_streak_break(chat_id):
+    # если пропустил больше дня, серия сгорела
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT streak, last_pomodoro_date FROM users WHERE chat_id=?', (chat_id,))
@@ -188,6 +248,7 @@ def check_streak_break(chat_id):
 
 
 def get_level(xp):
+    # уровень по xp
     current = LEVELS[0][1]
     for threshold, name in LEVELS:
         if xp >= threshold:
@@ -196,6 +257,7 @@ def get_level(xp):
 
 
 def check_achievements(chat_id, user):
+    # проверяем все достижения и выдаём новые
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT achievements FROM users WHERE chat_id=?', (chat_id,))
@@ -232,6 +294,7 @@ def check_achievements(chat_id, user):
 
 
 def send_message(chat_id, text, keyboard=None):
+    # базовый sendMessage с html
     url = f'{API}/sendMessage'
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
     if keyboard:
@@ -247,6 +310,7 @@ def send_message(chat_id, text, keyboard=None):
 
 
 def edit_message(chat_id, message_id, text, keyboard=None):
+    # редактируем сообщение (пригодится для прогресс-бара)
     url = f'{API}/editMessageText'
     payload = {'chat_id': chat_id, 'message_id': message_id,
                'text': text, 'parse_mode': 'HTML'}
@@ -259,6 +323,7 @@ def edit_message(chat_id, message_id, text, keyboard=None):
 
 
 def answer_callback(callback_id, text=None):
+    # убираем "часики" у кнопки
     url = f'{API}/answerCallbackQuery'
     payload = {'callback_query_id': callback_id}
     if text:
@@ -270,6 +335,7 @@ def answer_callback(callback_id, text=None):
 
 
 def set_reaction(chat_id, message_id, emoji='🍅'):
+    # ставим реакцию на сообщение (работает не везде)
     url = f'{API}/setMessageReaction'
     payload = {
         'chat_id': chat_id,
@@ -285,6 +351,7 @@ def set_reaction(chat_id, message_id, emoji='🍅'):
 
 
 def send_reply_keyboard(chat_id):
+    # нижнее постоянное меню
     url = f'{API}/sendMessage'
     payload = {
         'chat_id': chat_id,
@@ -305,6 +372,7 @@ def send_reply_keyboard(chat_id):
 
 
 def kb_main(user=None):
+    # основная inline-клавиатура со счётчиками
     tomatoes = user['tomatoes_today'] if user else 0
     streak = user['streak'] if user else 0
     streak_icon = '🔥 ' if streak >= 4 else ''
@@ -324,6 +392,7 @@ def kb_main(user=None):
 
 
 def kb_back():
+    # кнопка "назад в меню"
     return {
         'inline_keyboard': [
             [{'text': '⬅️ В меню', 'callback_data': 'menu'}],
@@ -332,15 +401,18 @@ def kb_back():
 
 
 def start_timer(chat_id, minutes, mode):
+    # запускаем таймер через threading.timer
     seconds = minutes * 60
     end_time = time.time() + seconds
 
     def fire():
+        # срабатывает когда время вышло
         ACTIVE_TIMERS.pop(chat_id, None)
         try:
             user = db_get_user(chat_id)
 
             if mode == 'work':
+                # засчитываем помидорку, обновляем серию, проверяем ачивки
                 db_add_tomato(chat_id)
                 update_streak(chat_id)
                 user = db_get_user(chat_id)
@@ -380,6 +452,7 @@ def start_timer(chat_id, minutes, mode):
 
 
 def stop_timer(chat_id):
+    # останавливаем и убираем таймер
     info = ACTIVE_TIMERS.pop(chat_id, None)
     if info:
         info['timer'].cancel()
@@ -388,6 +461,7 @@ def stop_timer(chat_id):
 
 
 def pause_timer(chat_id):
+    # ставим на паузу и сохраняем остаток
     info = ACTIVE_TIMERS.pop(chat_id, None)
     if not info:
         return None
@@ -398,6 +472,7 @@ def pause_timer(chat_id):
 
 
 def handle_work(chat_id):
+    # старт работы, спрашиваем задачу
     user = db_get_user(chat_id)
     if ACTIVE_TIMERS.get(chat_id):
         send_message(chat_id, '⚠️ Таймер уже запущен. Нажми Стоп, чтобы сбросить.', kb_main(user))
@@ -416,6 +491,7 @@ def handle_work(chat_id):
 
 
 def actually_start_work(chat_id, task):
+    # запускаем таймер после того как написали задачу
     user = db_get_user(chat_id)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -555,8 +631,7 @@ def handle_settings(chat_id):
         '• Не пропускай перерывы - это часть метода.\n'
         '• Записывай задачи заранее.\n'
         '• Следи за серией 🔥 она мотивирует.\n\n'
-        '<i>На бесплатном Render бот засыпает через 15 мин. '
-        'Настрой пингер на /healthcheck, чтобы уведомления приходили вовремя.</i>'
+        '<i>Если хочешь спросить что-то у ИИ — просто напиши сообщением.</i>'
     )
     send_message(chat_id, text, kb_back())
 
@@ -566,12 +641,13 @@ def handle_menu(chat_id):
     send_message(chat_id, '🍅 <b>Pomodoro-бот</b>\n\nВыбери действие:', kb_main(user))
 
 
-# WSGI
+# WSGI приложение
 def application(environ, start_response):
     try:
         path = environ.get('PATH_INFO', '').lower()
         method = environ.get('REQUEST_METHOD', 'GET')
 
+        # healthcheck для render
         if path == '/healthcheck':
             start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8')])
             return [b'OK']
@@ -593,7 +669,7 @@ def application(environ, start_response):
                 start_response('200 OK', [('Content-Type', 'text/plain')])
                 return [b'ok']
 
-          
+            # обработка обычных сообщений
             message = data.get('message')
             if message:
                 chat_id = message['chat']['id']
@@ -603,32 +679,27 @@ def application(environ, start_response):
                 db_get_user(chat_id, first_name)
                 check_streak_break(chat_id)
 
-                # Reply-кнопки
+                # reply кнопки снизу
                 if user_text == '▶️ Старт':
                     handle_work(chat_id)
                     user_text = ''
-
                 elif user_text == '⏸ Пауза':
                     handle_pause(chat_id)
                     user_text = ''
-
                 elif user_text == '⏹ Стоп':
                     handle_stop(chat_id)
                     user_text = ''
-
                 elif user_text == '🍅 Статистика':
                     handle_stats(chat_id)
                     user_text = ''
-
                 elif user_text == '📖 История':
                     handle_history(chat_id)
                     user_text = ''
-
                 elif user_text == '⚙️ Настройки':
                     handle_settings(chat_id)
                     user_text = ''
 
-                # Команды
+                # команды
                 if user_text == '/start':
                     send_reply_keyboard(chat_id)
                     send_message(
@@ -636,10 +707,10 @@ def application(environ, start_response):
                         f'Привет, {first_name}! 👋\n\n'
                         f'Я - Pomodoro-бот. Помогу работать по методу «помидора»: '
                         f'25 минут фокуса, 5 минут отдыха.\n\n'
-                        f'Выбери действие в меню ниже 👇',
+                        f'Выбери действие в меню ниже 👇\n'
+                        f'А если хочешь спросить что-то у ИИ — просто напиши сообщением.',
                         kb_main(db_get_user(chat_id))
                     )
-
                 elif user_text == '/menu':
                     handle_menu(chat_id)
                 elif user_text == '/about':
@@ -653,10 +724,11 @@ def application(environ, start_response):
                 elif user_text == '/resume':
                     handle_resume(chat_id)
 
-                # Текст задачи (когда бот ждёт)
+                # задача или вопрос ии
                 elif user_text and not user_text.startswith('/'):
                     user = db_get_user(chat_id)
                     if user['awaiting_task']:
+                        # юзер ответил на "над чем работаешь?"
                         conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
                         c.execute('UPDATE users SET awaiting_task=0 WHERE chat_id=?', (chat_id,))
@@ -664,11 +736,17 @@ def application(environ, start_response):
                         conn.close()
                         actually_start_work(chat_id, user_text)
                     else:
-                        send_message(chat_id,
-                            'Я понимаю команды и кнопки. Нажми «▶️ Старт», чтобы начать.',
-                            kb_main(user))
+                        # обычный вопрос, отдаём ии
+                        send_message(chat_id, '🤔 Думаю...', None)
+                        ai_answer = ask_ai(chat_id, user_text)
+                        if ai_answer:
+                            send_message(chat_id, ai_answer, kb_main(user))
+                        else:
+                            send_message(chat_id,
+                                'Не могу сейчас ответить. Попробуй команды или кнопки.',
+                                kb_main(user))
 
-            # Callback-кнопки
+            # обработка кнопок
             callback = data.get('callback_query')
             if callback:
                 callback_id = callback['id']
@@ -712,4 +790,5 @@ def application(environ, start_response):
         return [b'ok']
 
 
+# создаём таблицы при старте
 db_init()
