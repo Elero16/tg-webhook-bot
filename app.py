@@ -76,15 +76,17 @@ def progress_bar(elapsed, total, width=10):
 
 
 def ask_ai(chat_id, user_question):
-    # если ключа нет, молча выходим, бот скажет заглушку
+    # отладка: видим, что функция вообще вызывается
+    log(f'ask_ai called: chat={chat_id}, q={user_question[:50]}', 'DEBUG')
+
+    # если ключа нет - молча выходим
     if client is None:
+        log('ask_ai: client is None — OPENAI_API_KEY не задан', 'Ошибка')
         return None
 
-    # у каждого чата своя короткая память
     if chat_id not in AI_MEMORY:
         AI_MEMORY[chat_id] = []
 
-    # системный промпт, роль бота
     messages = [
         {'role': 'system', 'content': (
             'Ты — дружелюбный помощник Pomodoro-бота. '
@@ -94,8 +96,6 @@ def ask_ai(chat_id, user_question):
             'Если вопрос не по теме — вежливо верни разговор к продуктивности.'
         )}
     ]
-
-    # добавляем последние 6 сообщений из памяти
     messages.extend(AI_MEMORY[chat_id][-6:])
     messages.append({'role': 'user', 'content': user_question})
 
@@ -108,14 +108,15 @@ def ask_ai(chat_id, user_question):
         )
         answer = response.choices[0].message.content.strip()
 
-        # обновляем память и не даём ей расти бесконечно
         AI_MEMORY[chat_id].append({'role': 'user', 'content': user_question})
         AI_MEMORY[chat_id].append({'role': 'assistant', 'content': answer})
         AI_MEMORY[chat_id] = AI_MEMORY[chat_id][-12:]
 
+        log(f'ask_ai ok: {answer[:60]}', 'DEBUG')
         return answer
     except Exception as e:
-        log(f'ask_ai error: {e}', 'Ошибка')
+        # тут будет видно точную причину
+        log(f'ask_ai error: {type(e).__name__}: {e}', 'Ошибка')
         return None
 
 
