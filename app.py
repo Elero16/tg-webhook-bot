@@ -13,13 +13,13 @@ WEBHOOK_PATH = '/tg_bot'
 API = f'https://api.telegram.org/bot{TOKEN}'
 DB_PATH = 'pomodoro.db'
 
-# ключ github models
-GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
-# подключаемся к github models через совместимый с openai интерфейс
+# ключ gemini api
+GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
+# подключаемся к gemini через совместимый с openai интерфейс
 client = OpenAI(
-    api_key=GITHUB_TOKEN,
-    base_url="https://models.github.ai/inference"
-) if GITHUB_TOKEN else None
+    api_key=GEMINI_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+) if GEMINI_KEY else None
 
 # память ии {chat_id: [сообщения]}
 AI_MEMORY = {}
@@ -105,7 +105,8 @@ def ask_ai(chat_id, user_question):
 
     try:
         response = client.chat.completions.create(
-            model='gpt-4o',
+            # было model='gpt-4o'
+            model='gemini-2.5-flash',
             messages=messages,
             max_tokens=300,
             temperature=0.7,
