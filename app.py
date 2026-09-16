@@ -106,7 +106,7 @@ def ask_ai(chat_id, user_question):
     try:
         response = client.chat.completions.create(
             # было model='gpt-4o'
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             messages=messages,
             max_tokens=300,
             temperature=0.7,
