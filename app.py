@@ -744,7 +744,7 @@ def application(environ, start_response):
                         conn.commit()
                         conn.close()
                         actually_start_work(chat_id, user_text)
-                                        else:
+                        else:
                         # обычный вопрос, отдаём ии
                         ai_answer = ask_ai(chat_id, user_text)
                         if ai_answer:
