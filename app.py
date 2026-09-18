@@ -626,13 +626,9 @@ def handle_about(chat_id):
 
 def handle_help(chat_id):
     # помощь от ии
-    send_message(chat_id, '🤔 Думаю...', None)
     ai_answer = ask_ai(chat_id, 'Кратко объясни, что такое метод Pomodoro и как им пользоваться')
     if ai_answer:
-        # сначала текст без клавиатуры
         send_message(chat_id, ai_answer, None)
-        # потом меню отдельно
-        send_message(chat_id, '⚙️ Меню:', kb_main(db_get_user(chat_id)))
     else:
         send_message(chat_id, 'Не могу сейчас ответить. Попробуй позже.', kb_main(db_get_user(chat_id)))
 
@@ -748,15 +744,12 @@ def application(environ, start_response):
                         conn.commit()
                         conn.close()
                         actually_start_work(chat_id, user_text)
-                    else:
+                                        else:
                         # обычный вопрос, отдаём ии
-                        send_message(chat_id, '🤔 Думаю...', None)
                         ai_answer = ask_ai(chat_id, user_text)
                         if ai_answer:
-                            # сначала текст без клавиатуры
+                            # ответ отдельным сообщением без клавиатуры
                             send_message(chat_id, ai_answer, None)
-                            # потом меню отдельно
-                            send_message(chat_id, '⚙️ Меню:', kb_main(user))
                         else:
                             send_message(chat_id,
                                 'Не могу сейчас ответить. Попробуй команды или кнопки.',
