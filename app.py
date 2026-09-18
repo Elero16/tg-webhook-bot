@@ -733,7 +733,7 @@ def application(environ, start_response):
                 elif user_text == '/resume':
                     handle_resume(chat_id)
 
-                # задача или вопрос ии
+                               # задача или вопрос ии
                 elif user_text and not user_text.startswith('/'):
                     user = db_get_user(chat_id)
                     if user['awaiting_task']:
@@ -744,7 +744,7 @@ def application(environ, start_response):
                         conn.commit()
                         conn.close()
                         actually_start_work(chat_id, user_text)
-                        else:
+                    else:
                         # обычный вопрос, отдаём ии
                         ai_answer = ask_ai(chat_id, user_text)
                         if ai_answer:
